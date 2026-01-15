@@ -30,6 +30,13 @@ export class Worker {
   loaders: any[] = []
   booted = false
 
+  /**
+   * Reusable Kernel instance - created once during boot() to prevent memory leaks.
+   * Previously, a new Kernel was created on every scheduled execution which caused
+   * CPU/memory to gradually increase over time.
+   */
+  private kernel: Kernel | null = null
+
   constructor(public app: ApplicationService) {}
 
   async boot() {
@@ -46,6 +53,12 @@ export class Worker {
         typeof commandModule === 'function' ? commandModule() : this.app.import(commandModule)
       )
     })
+
+    // Create Kernel ONCE during boot and reuse it for all scheduled executions
+    this.kernel = new Kernel(this.app)
+    for (const loader of this.loaders) {
+      this.kernel.addLoader(loader)
+    }
 
     this.booted = true
   }
@@ -76,16 +89,12 @@ export class Worker {
             try {
               switch (command.type) {
                 case 'command':
-                  const ace = new Kernel(this.app)
-
-                  for (const loader of this.loaders) {
-                    ace.addLoader(loader)
-                  }
-
                   for (const callback of command.beforeCallbacks) {
                     await callback()
                   }
-                  await run(() => ace.exec(command.commandName, command.commandArgs), {
+
+                  // Reuse the kernel instance instead of creating a new one each time
+                  await run(() => this.kernel!.exec(command.commandName, command.commandArgs), {
                     enabled: command.config.withoutOverlapping,
                     timeout: command.config.expiresAt,
                     key: `${index}-${command.commandName}-${command.commandArgs}`,
@@ -95,6 +104,7 @@ export class Worker {
                       )
                     },
                   })
+
                   for (const callback of command.afterCallbacks) {
                     await callback()
                   }
